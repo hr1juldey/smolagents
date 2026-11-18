@@ -2626,3 +2626,43 @@ def test_tool_calling_agents_raises_agent_execution_error_when_tool_raises():
     agent = ToolCallingAgent(model=FakeToolCallModel(), tools=[_sample_tool])
     with pytest.raises(AgentExecutionError):
         agent.execute_tool_call(_sample_tool.name, "sample")
+
+
+def test_continued_run_keeps_agent_updated_state_variables():
+    """Regression test for #3143: on a continued run (reset=False), variables that
+    the agent's code updated in a previous run must keep their updated values, not
+    be overwritten by the stale additional_args snapshot in agent.state."""
+    from smolagents.monitoring import LogLevel, TokenUsage
+
+    class FakeBudgetModel(Model):
+        """Deterministic: first call deducts 40, later calls deduct 10."""
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.calls = 0
+
+        def generate(self, messages, stop_sequences=None, **kwargs):
+            self.calls += 1
+            code = (
+                "remaining_budget = remaining_budget - 40"
+                if self.calls == 1
+                else "remaining_budget = remaining_budget - 10"
+            )
+            return ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=f"Thought: deducting.\n<code>\n{code}\nfinal_answer(remaining_budget)\n</code>",
+                token_usage=TokenUsage(10, 10),
+            )
+
+    agent = CodeAgent(tools=[], model=FakeBudgetModel(model_id="fake"), verbosity_level=LogLevel.OFF)
+    answer1 = agent.run(
+        "Subtract the purchase from remaining_budget, save the updated value, return it.",
+        additional_args={"remaining_budget": 100},
+    )
+    assert answer1 == 60
+
+    answer2 = agent.run(
+        "Subtract the new purchase from the saved remaining_budget, update it, return it.",
+        reset=False,
+    )
+    assert answer2 == 50, "Continued run must build on the updated variable, not the stale snapshot"

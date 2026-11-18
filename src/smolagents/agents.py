@@ -468,6 +468,15 @@ class MultiStepAgent(ABC):
         max_steps = max_steps or self.max_steps
         self.task = task
         self.interrupt_switch = False
+        if (
+            not reset
+            and (executor := getattr(self, "python_executor", None)) is not None
+            and hasattr(executor, "state")
+        ):
+            # Continued run: adopt the executor's current values for variables already
+            # tracked in state, so updates made by the agent's code in previous runs
+            # survive. Applied before additional_args so re-supplied keys still win.
+            self.state.update({k: v for k, v in executor.state.items() if k in self.state})
         if additional_args:
             self.state.update(additional_args)
             self.task += f"""
